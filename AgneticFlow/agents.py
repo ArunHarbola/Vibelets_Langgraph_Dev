@@ -314,3 +314,84 @@ Output only the prompt, no additional commentary.
             num_images
         )
 
+
+class NavigationAgent:
+    """Agent for determining navigation intent from user messages"""
+    
+    def __init__(self):
+        self.llm = ChatOpenAI(
+            model="gpt-4",
+            temperature=0,
+            openai_api_key=Config.OPENAI_API_KEY
+        )
+    
+    async def analyze_intent(self, state: Dict) -> Dict[str, Any]:
+        """Analyze user message to determine navigation intent"""
+        messages = state.get("messages", [])
+        if not messages:
+            return {"intent": "continue"}
+            
+        # Get the last user message
+        last_user_message = None
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                last_user_message = msg.get("content")
+                break
+        
+        if not last_user_message:
+            return {"intent": "continue"}
+            
+        current_step = state.get("current_step", "scrape")
+        
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a navigation router for an ad campaign generation workflow.
+Your job is to determine where the user wants to go based on their message and the current step.
+
+Workflow Steps:
+1. scrape (Input URL)
+2. analyze (Product Analysis)
+3. generate_scripts (Create Ad Scripts)
+4. select_script (Choose one script)
+5. refine_script (Edit selected script)
+6. generate_images (Create visuals)
+7. refine_images (Edit visuals)
+8. generate_audio (Voiceover)
+9. select_avatar (Choose presenter)
+10. generate_video (Final video)
+
+Rules:
+- If user says "next", "looks good", "continue", or approves current output -> return "next"
+- If user wants to change something from a previous step (e.g., "change target audience") -> return the name of that step (e.g., "analyze")
+- If user explicitly asks to go to a step -> return that step name
+- If user provides feedback for the CURRENT step (e.g., "make it funnier" while in generate_scripts) -> return "stay" (to refine)
+- If user wants to stop -> return "complete"
+
+Output JSON:
+{{
+    "intent": "next" | "stay" | "complete" | "step_name",
+    "reasoning": "brief explanation"
+}}
+"""),
+            ("human", """
+Current Step: {current_step}
+User Message: {user_message}
+
+Determine the navigation intent.
+""")
+        ])
+        
+        chain = prompt | self.llm | StrOutputParser()
+        result = await chain.ainvoke({
+            "current_step": current_step,
+            "user_message": last_user_message
+        })
+        
+        try:
+            # Clean up potential markdown code blocks
+            cleaned_result = result.replace("```json", "").replace("```", "").strip()
+            return json.loads(cleaned_result)
+        except:
+            print(f"Failed to parse navigation intent: {result}")
+            return {"intent": "stay"}
+
+

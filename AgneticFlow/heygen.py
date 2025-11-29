@@ -11,7 +11,8 @@ class HeyGenAvatarIntegrator:
     """Integrates voiceover with HeyGen avatar"""
     
     def __init__(self):
-        self.api_key = Config.HEYGEN_API_KEY
+        self.api_key = "sk_V2_hgu_kFKikEzcc9J_vkOeLpbL9s30JB2N4cUc4LC1tiR5cXIh"
+
     
     def get_avatars(self) -> List[Dict]:
         """Fetch available avatars from HeyGen API"""

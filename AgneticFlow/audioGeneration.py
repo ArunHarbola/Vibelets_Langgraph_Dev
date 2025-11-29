@@ -19,7 +19,7 @@ class ElevenLabsVoiceGenerator:
     """Handles text-to-speech generation using Eleven Labs API"""
     
     def __init__(self):
-        self.api_key = Config.ELEVENLABS_API_KEY
+        self.api_key = "sk_13a64a9877a3d92e503ec078db070fb6fde8bdf8e40e67ef"
         if not self.api_key:
             print("WARNING: ELEVENLABS_API_KEY is not set in environment variables.")
         else:

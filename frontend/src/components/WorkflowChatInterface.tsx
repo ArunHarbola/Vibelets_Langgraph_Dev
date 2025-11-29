@@ -457,30 +457,229 @@ export const WorkflowChatInterface = () => {
         }
     };
 
+    const renderStepComponent = (step: WorkflowStep, state: WorkflowState) => {
+        switch (step) {
+            case 'scrape':
+                if (state.product_data) {
+                    const imagesToShow = state.product_data.downloaded_images && state.product_data.downloaded_images.length > 0
+                        ? state.product_data.downloaded_images
+                        : state.product_data.images || [];
+                    return (
+                        <ImageSlideshow
+                            images={imagesToShow}
+                            onContinue={async () => await handleAnalyze()}
+                        />
+                    );
+                }
+                return null;
+            case 'analyze':
+                if (state.analysis) {
+                    return (
+                        <AnalysisCard
+                            analysis={state.analysis}
+                            isRefining={false}
+                            onConfirm={async () => await handleGenerateScripts()}
+                            onRefine={async (fb: string) => await handleAnalyze(fb)}
+                        />
+                    );
+                }
+                return null;
+            case 'generate_scripts':
+            case 'select_script':
+                if (state.scripts) {
+                    return (
+                        <ScriptSelection
+                            scripts={state.scripts}
+                            isRefining={false}
+                            onRefineAll={async (fb: string) => await handleGenerateScripts(fb)}
+                            onSelect={async (script: string, index: number) => await handleSelectScript(index)}
+                        />
+                    );
+                }
+                return null;
+            case 'refine_script':
+                if (state.selected_script) {
+                    return (
+                        <ScriptRefinement
+                            script={state.selected_script}
+                            isRefining={false}
+                            onTweak={async (fb: string) => await handleRefineScript(fb)}
+                            onConfirm={async () => await handleGenerateImages()}
+                        />
+                    );
+                }
+                return null;
+            case 'generate_images':
+            case 'refine_images':
+                if (state.generated_images && state.generated_images.length > 0) {
+                    return (
+                        <div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full max-w-2xl">
+                                {state.generated_images.map((img, idx) => (
+                                    <motion.div
+                                        key={idx}
+                                        initial={{ opacity: 0, scale: 0.9 }}
+                                        animate={{ opacity: 1, scale: 1 }}
+                                        className="relative aspect-square rounded-xl overflow-hidden border border-zinc-800 group"
+                                    >
+                                        <img
+                                            src={`http://localhost:8000${img}`}
+                                            alt={`Generated Ad ${idx + 1}`}
+                                            className="w-full h-full object-cover"
+                                        />
+                                        <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                            <a
+                                                href={`http://localhost:8000${img}`}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                className="px-4 py-2 bg-white text-black rounded-full text-sm font-medium hover:bg-zinc-200 transition-colors"
+                                            >
+                                                View Full
+                                            </a>
+                                        </div>
+                                    </motion.div>
+                                ))}
+                            </div>
+                            <div className="flex gap-2 mt-4">
+                                <button
+                                    onClick={async () => await handleGenerateAudio()}
+                                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium flex items-center gap-2"
+                                >
+                                    <Music size={16} />
+                                    Proceed to Audio
+                                </button>
+                                <button
+                                    onClick={async () => {
+                                        const feedback = prompt("How would you like to refine the images?");
+                                        if (feedback) await handleRefineImages(feedback);
+                                    }}
+                                    className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white rounded-lg text-sm font-medium"
+                                >
+                                    Refine Images
+                                </button>
+                            </div>
+                        </div>
+                    );
+                }
+                return null;
+            case 'generate_audio':
+                if (state.audio_url) {
+                    return (
+                        <div className="bg-zinc-900 p-4 rounded-xl border border-zinc-800 w-full max-w-md">
+                            <div className="flex items-center gap-3 mb-3">
+                                <div className="p-2 bg-indigo-500/20 rounded-full text-indigo-400">
+                                    <Play size={20} fill="currentColor" />
+                                </div>
+                                <span className="text-zinc-200 font-medium">Voiceover Preview</span>
+                            </div>
+                            <audio controls src={`http://localhost:8000${state.audio_url}`} className="w-full" />
+                            <button
+                                onClick={async () => await handleSelectAvatar()}
+                                className="mt-4 w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium flex items-center justify-center gap-2"
+                            >
+                                <Video size={16} />
+                                Select Avatar & Generate Video
+                            </button>
+                        </div>
+                    );
+                }
+                return null;
+            case 'select_avatar':
+                // For select_avatar, we might need to fetch avatars if not in state, 
+                // but usually the component handles it or we pass it.
+                // For now, VideoGeneration component handles avatar selection if audioUrl is present.
+                if (state.audio_url) {
+                    return (
+                        <VideoGeneration
+                            audioUrl={state.audio_url}
+                            onVideoGenerated={async (videoUrl) => {
+                                addMessage('agent', "Video Ready!", (
+                                    <div className="bg-zinc-900 p-4 rounded-xl border border-zinc-800 w-full max-w-md">
+                                        <video controls src={videoUrl} className="w-full rounded-lg" />
+                                        <a
+                                            href={videoUrl}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="mt-3 block text-center text-indigo-400 hover:text-indigo-300 text-sm"
+                                        >
+                                            Open in new tab
+                                        </a>
+                                    </div>
+                                ));
+                                setCurrentStep('complete');
+                            }}
+                        />
+                    );
+                }
+                return null;
+            case 'generate_video':
+            case 'complete':
+                if (state.video_url) {
+                     return (
+                        <div className="bg-zinc-900 p-4 rounded-xl border border-zinc-800 w-full max-w-md">
+                            <video controls src={state.video_url} className="w-full rounded-lg" />
+                            <a
+                                href={state.video_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="mt-3 block text-center text-indigo-400 hover:text-indigo-300 text-sm"
+                            >
+                                Open in new tab
+                            </a>
+                        </div>
+                    );
+                }
+                return null;
+            default:
+                return null;
+        }
+    };
+
     const handleSend = async () => {
         if (!inputValue.trim() || isLoading) return;
 
         const input = inputValue;
         setInputValue('');
+        addMessage('user', input);
+        setIsLoading(true);
 
-        // Handle chat-based editing
-        if (currentStep !== 'scrape') {
-            addMessage('user', input);
-            setIsLoading(true);
-            try {
-                const response = await workflowApi.chat(input);
-                updateStateFromResponse(response);
-
-                // The response will have updated state, we can show a confirmation
-                addMessage('agent', "Updated based on your feedback. Check the results above.");
-            } catch (error: any) {
-                addMessage('agent', formatError(error));
-            } finally {
-                setIsLoading(false);
+        try {
+            let response;
+            
+            // If we are in the initial scrape step and input looks like a URL, treat as scrape
+            if (currentStep === 'scrape' && (input.startsWith('http') || input.startsWith('www'))) {
+                response = await workflowApi.scrape(input);
+            } else {
+                // Otherwise, treat as chat/navigation/refinement
+                response = await workflowApi.chat(input);
             }
-        } else {
-            // Initial URL input
-            await handleScrape(input);
+
+            updateStateFromResponse(response);
+            
+            // Check if step changed or if we need to show a component for the current step
+            const newStep = response.state.current_step as WorkflowStep;
+            const component = renderStepComponent(newStep, response.state);
+            
+            if (component) {
+                // Determine message based on step
+                let msg = "Here is the result:";
+                if (newStep === 'scrape') msg = "Product data scraped successfully!";
+                else if (newStep === 'analyze') msg = "Here is the analysis:";
+                else if (newStep === 'generate_scripts') msg = "Here are the generated scripts:";
+                else if (newStep === 'generate_images') msg = "Here are the generated images:";
+                else if (newStep === 'generate_audio') msg = "Audio generated!";
+                else if (newStep === 'generate_video') msg = "Video generated!";
+                
+                addMessage('agent', msg, component);
+            } else {
+                // If no component, maybe just a text response or confirmation
+                addMessage('agent', "Processed your request. What would you like to do next?");
+            }
+
+        } catch (error: any) {
+            addMessage('agent', formatError(error));
+        } finally {
+            setIsLoading(false);
         }
     };
 

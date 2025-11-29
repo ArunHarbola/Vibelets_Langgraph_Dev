@@ -7,7 +7,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from state_schema import WorkflowState
 from scraper import ProductScraper
-from agents import AnalysisAgent, ScriptGenerationAgent, ImageGenerationAgent
+from agents import AnalysisAgent, ScriptGenerationAgent, ImageGenerationAgent, NavigationAgent
 from audioGeneration import ElevenLabsVoiceGenerator
 from heygen import HeyGenAvatarIntegrator
 import os
@@ -23,6 +23,7 @@ class AdCampaignWorkflow:
         self.image_agent = ImageGenerationAgent()
         self.audio_gen = ElevenLabsVoiceGenerator()
         self.heygen = HeyGenAvatarIntegrator()
+        self.navigation_agent = NavigationAgent()
         
         # Build the graph
         self.graph = self._build_graph()
@@ -84,67 +85,63 @@ class AdCampaignWorkflow:
         
         return workflow
     
-    def _route_node(self, state: WorkflowState) -> Dict[str, Any]:
-        """Entry point node that does nothing but pass state to conditional edge"""
-        return {}
+    async def _route_node(self, state: WorkflowState) -> Dict[str, Any]:
+        """Entry point node that determines navigation"""
+        # Analyze intent using agent
+        result = await self.navigation_agent.analyze_intent(state)
+        intent = result.get("intent")
+        
+        print(f"Navigation Intent: {intent} (Reason: {result.get('reasoning')})")
+        
+        # Map 'next' to the actual next step based on current_step
+        if intent == "next":
+            current = state.get("current_step")
+            if current == "scrape":
+                intent = "analyze"
+            elif current == "analyze":
+                intent = "generate_scripts"
+            elif current == "generate_scripts":
+                intent = "select_script"
+            elif current == "select_script":
+                intent = "refine_script"
+            elif current == "refine_script":
+                intent = "generate_images"
+            elif current == "generate_images":
+                intent = "refine_images"
+            elif current == "refine_images":
+                intent = "generate_audio"
+            elif current == "generate_audio":
+                intent = "select_avatar"
+            elif current == "select_avatar":
+                intent = "generate_video"
+            elif current == "generate_video":
+                intent = "complete"
+        
+        # Map 'stay' to current step
+        elif intent == "stay":
+            intent = state.get("current_step")
+            
+        return {"navigation_intent": intent}
 
     def _route_logic(self, state: WorkflowState) -> str:
-        """Route to the appropriate step based on current_step or navigation_intent.
-        This function should NOT modify state - it only returns the next node name.
-        """
+        """Route to the appropriate step based on navigation_intent."""
+        intent = state.get("navigation_intent")
         current_step = state.get("current_step", "scrape")
-        navigation_intent = state.get("navigation_intent")
         
-        # If user explicitly wants to navigate somewhere, use that
-        if navigation_intent:
-            # Parse navigation intent (e.g., "go to analyze", "go back to scripts")
-            intent_lower = navigation_intent.lower()
-            if "scrape" in intent_lower or "start" in intent_lower:
-                current_step = "scrape"
-            elif "analyze" in intent_lower or "analysis" in intent_lower:
-                current_step = "analyze"
-            elif "script" in intent_lower and "generate" in intent_lower:
-                current_step = "generate_scripts"
-            elif "script" in intent_lower and ("select" in intent_lower or "choose" in intent_lower):
-                current_step = "select_script"
-            elif "script" in intent_lower and ("refine" in intent_lower or "tweak" in intent_lower):
-                current_step = "refine_script"
-            elif "image" in intent_lower and "generate" in intent_lower:
-                current_step = "generate_images"
-            elif "image" in intent_lower and ("refine" in intent_lower or "edit" in intent_lower):
-                current_step = "refine_images"
-            elif "audio" in intent_lower:
-                current_step = "generate_audio"
-            elif "avatar" in intent_lower:
-                current_step = "select_avatar"
-            elif "video" in intent_lower:
-                current_step = "generate_video"
-            elif "complete" in intent_lower or "finish" in intent_lower:
-                return END
+        # If intent is a valid step name, go there
+        valid_steps = [
+            "scrape", "analyze", "generate_scripts", "select_script", 
+            "refine_script", "generate_images", "refine_images", 
+            "generate_audio", "select_avatar", "generate_video"
+        ]
         
-        # Route to the appropriate node (return string only, don't modify state)
-        if current_step == "scrape":
-            return "scrape"
-        elif current_step == "analyze":
-            return "analyze"
-        elif current_step == "generate_scripts":
-            return "generate_scripts"
-        elif current_step == "select_script":
-            return "select_script"
-        elif current_step == "refine_script":
-            return "refine_script"
-        elif current_step == "generate_images":
-            return "generate_images"
-        elif current_step == "refine_images":
-            return "refine_images"
-        elif current_step == "generate_audio":
-            return "generate_audio"
-        elif current_step == "select_avatar":
-            return "select_avatar"
-        elif current_step == "generate_video":
-            return "generate_video"
-        else:
+        if intent in valid_steps:
+            return intent
+        elif intent == "complete":
             return END
+            
+        # Fallback to current step or END
+        return current_step if current_step in valid_steps else END
     
     def _scrape_node(self, state: WorkflowState) -> WorkflowState:
         """Scrape product/store URL"""

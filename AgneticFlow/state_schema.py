@@ -71,4 +71,28 @@ class WorkflowState(TypedDict):
     
     # Metadata
     iteration_count: Dict[str, int]  # Track iterations per step
+    
+    # Facebook Ad Campaign Integration
+    facebook_access_token: Optional[str]  # User's Facebook access token
+    facebook_user_id: Optional[str]  # Facebook user ID
+    facebook_ad_accounts: Optional[List[Dict[str, Any]]]  # List of available ad accounts
+    selected_ad_account_id: Optional[str]  # Selected ad account ID
+    selected_ad_account: Optional[Dict[str, Any]]  # Full ad account details
+    
+    # Media Management (HeyGen-generated content)
+    available_media: Optional[List[Dict[str, Any]]]  # List of available images/videos
+    selected_media: Optional[Dict[str, Any]]  # Selected media for campaign
+    selected_media_type: Optional[Literal["image", "video"]]  # Type of selected media
+    
+    # Campaign Configuration
+    campaign_config: Optional[Dict[str, Any]]  # AI-generated campaign configuration
+    campaign_preview: Optional[Dict[str, Any]]  # Preview data for the campaign
+    campaign_modifications: List[str]  # History of user-requested modifications
+    
+    # Publishing
+    published_campaign_id: Optional[str]  # Facebook campaign ID
+    published_adset_id: Optional[str]  # Facebook ad set ID
+    published_ad_id: Optional[str]  # Facebook ad ID
+    campaign_status: Optional[Literal["draft", "preview", "modified", "publishing", "published"]]  # Campaign status
+    campaign_url: Optional[str]  # URL to view campaign in Facebook Ads Manager
 

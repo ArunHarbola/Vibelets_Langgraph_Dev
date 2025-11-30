@@ -95,6 +95,26 @@ class SelectProductRequest(WorkflowRequest):
     product_index: Optional[int] = None
     product_data: Optional[Dict[str, Any]] = None
 
+# Facebook-specific request models
+class FacebookAuthRequest(WorkflowRequest):
+    access_token: str
+
+class SelectAdAccountRequest(WorkflowRequest):
+    account_id: str
+
+class SelectMediaRequest(WorkflowRequest):
+    media_id: str
+    media_data: Dict[str, Any]
+
+class CreateCampaignRequest(WorkflowRequest):
+    pass
+
+class ModifyCampaignRequest(WorkflowRequest):
+    modification_request: str
+
+class PublishCampaignRequest(WorkflowRequest):
+    pass
+
 # --- Helper Functions ---
 
 def get_or_create_thread(thread_id: Optional[str] = None) -> str:
@@ -129,7 +149,24 @@ def get_or_create_thread(thread_id: Optional[str] = None) -> str:
             "video_url": None,
             "video_status": None,
             "error": None,
-            "iteration_count": {}
+            "iteration_count": {},
+            # Facebook fields
+            "facebook_access_token": None,
+            "facebook_user_id": None,
+            "facebook_ad_accounts": None,
+            "selected_ad_account_id": None,
+            "selected_ad_account": None,
+            "available_media": None,
+            "selected_media": None,
+            "selected_media_type": None,
+            "campaign_config": None,
+            "campaign_preview": None,
+            "campaign_modifications": [],
+            "published_campaign_id": None,
+            "published_adset_id": None,
+            "published_ad_id": None,
+            "campaign_status": None,
+            "campaign_url": None
         }
     
     return thread_id
@@ -548,6 +585,213 @@ async def chat(request: WorkflowRequest):
         "thread_id": thread_id,
         "state": result,
         "current_step": result.get("current_step"),
+        "error": result.get("error")
+    }
+
+# ===== Facebook Campaign Endpoints =====
+
+@app.post("/api/facebook/authenticate")
+async def facebook_authenticate(request: FacebookAuthRequest):
+    """Authenticate with Facebook and get ad accounts"""
+    thread_id = get_or_create_thread(request.thread_id)
+    state = active_sessions[thread_id]
+    
+    # Set access token
+    state["facebook_access_token"] = request.access_token
+    state["current_step"] = "authenticate_facebook"
+    state = update_state_from_request(state, request)
+    
+    # Run workflow step
+    config = {"configurable": {"thread_id": thread_id}}
+    result = await workflow.run_step(state, config)
+    
+    # Update session
+    active_sessions[thread_id] = result
+    
+    return {
+        "thread_id": thread_id,
+        "state": result,
+        "user_id": result.get("facebook_user_id"),
+        "ad_accounts": result.get("facebook_ad_accounts"),
+        "error": result.get("error")
+    }
+
+@app.post("/api/facebook/select_account")
+async def select_facebook_account(request: SelectAdAccountRequest):
+    """Select Facebook ad account"""
+    thread_id = get_or_create_thread(request.thread_id)
+    state = active_sessions[thread_id]
+    
+    # Set selected account
+    state["selected_ad_account_id"] = request.account_id
+    state["current_step"] = "select_ad_account"
+    state = update_state_from_request(state, request)
+    
+    # Run workflow step
+    config = {"configurable": {"thread_id": thread_id}}
+    result = await workflow.run_step(state, config)
+    
+    # Update session
+    active_sessions[thread_id] = result
+    
+    return {
+        "thread_id": thread_id,
+        "state": result,
+        "selected_account": result.get("selected_ad_account"),
+        "error": result.get("error")
+    }
+
+@app.get("/api/facebook/media")
+async def list_facebook_media(thread_id: Optional[str] = None):
+    """List available media (HeyGen-generated images and videos)"""
+    thread_id = get_or_create_thread(thread_id)
+    state = active_sessions[thread_id]
+    
+    # Set current step
+    state["current_step"] = "list_media"
+    
+    # Run workflow step
+    config = {"configurable": {"thread_id": thread_id}}
+    result = await workflow.run_step(state, config)
+    
+    # Update session
+    active_sessions[thread_id] = result
+    
+    return {
+        "thread_id": thread_id,
+        "available_media": result.get("available_media", []),
+        "error": result.get("error")
+    }
+
+@app.post("/api/facebook/select_media")
+async def select_facebook_media(request: SelectMediaRequest):
+    """Select media for campaign"""
+    thread_id = get_or_create_thread(request.thread_id)
+    state = active_sessions[thread_id]
+    
+    # Set selected media
+    state["selected_media"] = request.media_data
+    state["current_step"] = "select_media"
+    state = update_state_from_request(state, request)
+    
+    # Run workflow step
+    config = {"configurable": {"thread_id": thread_id}}
+    result = await workflow.run_step(state, config)
+    
+    # Update session
+    active_sessions[thread_id] = result
+    
+    return {
+        "thread_id": thread_id,
+        "state": result,
+        "selected_media": result.get("selected_media"),
+        "error": result.get("error")
+    }
+
+@app.post("/api/facebook/campaign/create")
+async def create_facebook_campaign(request: CreateCampaignRequest):
+    """Create campaign configuration using AI"""
+    thread_id = get_or_create_thread(request.thread_id)
+    state = active_sessions[thread_id]
+    
+    # Set current step
+    state["current_step"] = "create_campaign"
+    state = update_state_from_request(state, request)
+    
+    # Run workflow step
+    config = {"configurable": {"thread_id": thread_id}}
+    result = await workflow.run_step(state, config)
+    
+    # Update session
+    active_sessions[thread_id] = result
+    
+    return {
+        "thread_id": thread_id,
+        "state": result,
+        "campaign_config": result.get("campaign_config"),
+        "campaign_status": result.get("campaign_status"),
+        "error": result.get("error")
+    }
+
+@app.post("/api/facebook/campaign/preview")
+async def preview_facebook_campaign(request: WorkflowRequest):
+    """Generate campaign preview"""
+    thread_id = get_or_create_thread(request.thread_id)
+    state = active_sessions[thread_id]
+    
+    # Set current step
+    state["current_step"] = "preview_campaign"
+    state = update_state_from_request(state, request)
+    
+    # Run workflow step
+    config = {"configurable": {"thread_id": thread_id}}
+    result = await workflow.run_step(state, config)
+    
+    # Update session
+    active_sessions[thread_id] = result
+    
+    return {
+        "thread_id": thread_id,
+        "state": result,
+        "campaign_preview": result.get("campaign_preview"),
+        "campaign_config": result.get("campaign_config"),
+        "error": result.get("error")
+    }
+
+@app.post("/api/facebook/campaign/modify")
+async def modify_facebook_campaign(request: ModifyCampaignRequest):
+    """Modify campaign based on user feedback"""
+    thread_id = get_or_create_thread(request.thread_id)
+    state = active_sessions[thread_id]
+    
+    # Add modification request as message
+    state["messages"].append({
+        "role": "user",
+        "content": request.modification_request
+    })
+    state["current_step"] = "modify_campaign"
+    state = update_state_from_request(state, request)
+    
+    # Run workflow step
+    config = {"configurable": {"thread_id": thread_id}}
+    result = await workflow.run_step(state, config)
+    
+    # Update session
+    active_sessions[thread_id] = result
+    
+    return {
+        "thread_id": thread_id,
+        "state": result,
+        "campaign_config": result.get("campaign_config"),
+        "campaign_preview": result.get("campaign_preview"),
+        "error": result.get("error")
+    }
+
+@app.post("/api/facebook/campaign/publish")
+async def publish_facebook_campaign(request: PublishCampaignRequest):
+    """Publish campaign to Facebook Ads"""
+    thread_id = get_or_create_thread(request.thread_id)
+    state = active_sessions[thread_id]
+    
+    # Set current step
+    state["current_step"] = "publish_campaign"
+    state = update_state_from_request(state, request)
+    
+    # Run workflow step
+    config = {"configurable": {"thread_id": thread_id}}
+    result = await workflow.run_step(state, config)
+    
+    # Update session
+    active_sessions[thread_id] = result
+    
+    return {
+        "thread_id": thread_id,
+        "state": result,
+        "campaign_id": result.get("published_campaign_id"),
+        "adset_id": result.get("published_adset_id"),
+        "ad_id": result.get("published_ad_id"),
+        "campaign_url": result.get("campaign_url"),
+        "campaign_status": result.get("campaign_status"),
         "error": result.get("error")
     }
 

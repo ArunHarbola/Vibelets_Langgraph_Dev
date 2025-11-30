@@ -5,6 +5,11 @@ Tests the complete flow from authentication to campaign publishing
 import requests
 import json
 import time
+import os
+from dotenv import load_dotenv
+FACEBOOK_ACCESS_TOKEN='EAAQeYqt2zH4BQMNm9RRLNJAuAfnqQ72wfdNFJ2WxbL9XhPlHeBVo41OjpTvkZAEIN0ySZCyHf3lC2f1YiQJ32itKRQXq6Yz2xt5RNsKk2RXryCEGxhSbAaUgLaLwKrVL7uu11scZBnSRWoLvqPkwZBePpDhz2xzMUjUads91cEH6bYZBwkO5ZBqtDavfL0nZARjSz3z'
+# Load environment variables
+load_dotenv()
 
 # Base URL for the API
 BASE_URL = "http://localhost:8000"
@@ -21,10 +26,29 @@ def test_facebook_campaign_flow():
     
     # Step 1: Authenticate with Facebook
     print("\n[Step 1] Authenticating with Facebook...")
+    
+    # Get access token - try environment variable first, then hardcoded global
+    access_token = os.getenv("FACEBOOK_ACCESS_TOKEN")
+    
+    # If not in environment, try to get from module-level variable
+    if not access_token:
+        try:
+            import sys
+            current_module = sys.modules[__name__]
+            if hasattr(current_module, 'FACEBOOK_ACCESS_TOKEN'):
+                access_token = getattr(current_module, 'FACEBOOK_ACCESS_TOKEN')
+        except:
+            pass
+    
+    if not access_token:
+        print("✗ Error: FACEBOOK_ACCESS_TOKEN not found")
+        print("  Please set it in your .env file or define it in the script")
+        return
+    
     auth_response = requests.post(
         f"{BASE_URL}/api/facebook/authenticate",
         json={
-            "access_token": "YOUR_FACEBOOK_ACCESS_TOKEN",  # Replace with actual token
+            "access_token": access_token,
             "thread_id": thread_id
         }
     )
@@ -33,11 +57,24 @@ def test_facebook_campaign_flow():
         auth_data = auth_response.json()
         thread_id = auth_data.get("thread_id")
         print(f"✓ Authentication successful!")
-        print(f"  User ID: {auth_data.get('user_id')}")
-        print(f"  Ad Accounts: {len(auth_data.get('ad_accounts', []))}")
+        print(f"  Thread ID: {thread_id}")
         
-        if auth_data.get("error"):
-            print(f"  Error: {auth_data['error']}")
+        # Check for errors in the state
+        state = auth_data.get("state", {})
+        if state and state.get("error"):
+            print(f"  ✗ Error: {state['error']}")
+            return
+        
+        # Get user_id and ad_accounts from the response
+        user_id = auth_data.get("user_id") or (state.get("facebook_user_id") if state else None)
+        ad_accounts = auth_data.get("ad_accounts") or (state.get("facebook_ad_accounts") if state else [])
+        
+        print(f"  User ID: {user_id}")
+        print(f"  Ad Accounts: {len(ad_accounts) if ad_accounts else 0}")
+        
+        if not ad_accounts:
+            print(f"  ⚠️  Warning: No ad accounts found. Check your Facebook access token.")
+            print(f"  Response: {json.dumps(auth_data, indent=2)}")
             return
     else:
         print(f"✗ Authentication failed: {auth_response.status_code}")
@@ -47,8 +84,7 @@ def test_facebook_campaign_flow():
     # Step 2: Select Ad Account
     print("\n[Step 2] Selecting ad account...")
     
-    # Get first ad account from auth response
-    ad_accounts = auth_data.get("ad_accounts", [])
+    # Use ad_accounts from previous step (already extracted)
     if not ad_accounts:
         print("✗ No ad accounts found")
         return
@@ -215,7 +251,7 @@ def test_facebook_campaign_flow():
 if __name__ == "__main__":
     print("\n⚠️  IMPORTANT: Before running this test:")
     print("1. Make sure the server is running (python server_langgraph.py)")
-    print("2. Replace 'YOUR_FACEBOOK_ACCESS_TOKEN' with a valid token")
+    print("2. Set FACEBOOK_ACCESS_TOKEN in your .env file")
     print("3. Ensure you have HeyGen-generated media in static/images or static/videos")
     print("\nPress Enter to continue or Ctrl+C to cancel...")
     input()

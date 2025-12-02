@@ -22,13 +22,13 @@ export const ImageSlideshow: React.FC<ImageSlideshowProps> = ({ images, onContin
         return (
             <div className="bg-zinc-900 p-4 rounded-xl border border-zinc-800 w-full max-w-md">
                 <p className="text-zinc-400 text-sm mb-4">No product images found.</p>
-                <button
+                {/* <button
                     onClick={onContinue}
                     className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium flex items-center justify-center gap-2"
                 >
                     <Play size={16} />
                     Continue to Analysis
-                </button>
+                </button> */}
             </div>
         );
     }
@@ -85,13 +85,13 @@ export const ImageSlideshow: React.FC<ImageSlideshowProps> = ({ images, onContin
                 </span>
             </div>
 
-            <button
+            {/* <button
                 onClick={onContinue}
                 className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium flex items-center justify-center gap-2"
             >
                 <Play size={16} />
                 Continue to Analysis
-            </button>
+            </button> */}
         </div>
     );
 };

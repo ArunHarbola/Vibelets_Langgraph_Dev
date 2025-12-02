@@ -35,13 +35,13 @@ export const ScriptRefinement: React.FC<ScriptRefinementProps> = ({ script, onCo
                     Type below to tweak the script...
                 </p>
 
-                <button
+                {/* <button
                     onClick={onConfirm}
                     className="w-full py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-lg font-medium flex items-center justify-center gap-2 transition-all hover:shadow-[0_0_20px_rgba(168,85,247,0.3)]"
                 >
                     <Check size={18} />
                     Finalize & Generate Creatives
-                </button>
+                </button> */}
             </div>
         </motion.div>
     );

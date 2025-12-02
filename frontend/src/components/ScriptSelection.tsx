@@ -24,7 +24,7 @@ export const ScriptSelection: React.FC<ScriptSelectionProps> = ({ scripts, onRef
             <div className="flex justify-between items-center mb-6">
                 <h3 className="text-xl font-semibold text-zinc-100">Select a Script</h3>
                 <p className="text-xs text-zinc-500">
-                    Type below to refine all scripts
+                    Type below to refine the scripts...
                 </p>
             </div>
 
@@ -53,13 +53,13 @@ export const ScriptSelection: React.FC<ScriptSelectionProps> = ({ scripts, onRef
                 </div>
             </div>
 
-            <button
+            {/* <button
                 onClick={() => onSelect(scripts[activeTab], activeTab)}
                 className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium flex items-center justify-center gap-2 transition-all hover:shadow-[0_0_20px_rgba(99,102,241,0.3)] group"
             >
                 Select This Script
                 <ArrowRight size={18} className="group-hover:translate-x-1 transition-transform" />
-            </button>
+            </button> */}
         </motion.div>
     );
 };

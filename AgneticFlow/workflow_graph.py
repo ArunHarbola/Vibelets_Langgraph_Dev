@@ -7,17 +7,18 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from state_schema import WorkflowState
 from scraper import ProductScraper
-from agents import AnalysisAgent, ScriptGenerationAgent, ImageGenerationAgent, NavigationAgent
+from agents import AnalysisAgent, ScriptGenerationAgent, ImageGenerationAgent, NavigationAgent, GuideAgent
 from audioGeneration import ElevenLabsVoiceGenerator
 from heygen import HeyGenAvatarIntegrator
 from facebook_agents import CampaignCreationAgent, CampaignPreviewAgent, CampaignModificationAgent
 from media_manager import MediaManager
-import os
 from facebook.auth import authenticate_user
 from facebook.campaigns import create_campaign
 from facebook.adsets import create_adset
-from facebook.ads import create_video_ad
-from facebook.media import upload_media_service
+from facebook.ads import create_video_ad, create_image_ad
+import os
+import json
+
 
 class AdCampaignWorkflow:
     """LangGraph-based workflow with bidirectional navigation"""
@@ -30,12 +31,13 @@ class AdCampaignWorkflow:
         self.audio_gen = ElevenLabsVoiceGenerator()
         self.heygen = HeyGenAvatarIntegrator()
         self.navigation_agent = NavigationAgent()
+        self.guide_agent = GuideAgent()
         
-        # Facebook campaign agents
+        # Facebook Agents
+        self.media_manager = MediaManager()
         self.campaign_creation_agent = CampaignCreationAgent()
         self.campaign_preview_agent = CampaignPreviewAgent()
         self.campaign_modification_agent = CampaignModificationAgent()
-        self.media_manager = MediaManager()
         
         # Build the graph
         self.graph = self._build_graph()
@@ -60,14 +62,12 @@ class AdCampaignWorkflow:
         workflow.add_node("select_avatar", self._select_avatar_node)
         workflow.add_node("generate_video", self._generate_video_node)
         
-        # Facebook campaign nodes
-        workflow.add_node("authenticate_facebook", self._authenticate_facebook_node)
+        # Facebook Integration Nodes
+        workflow.add_node("facebook_auth", self._facebook_auth_node)
         workflow.add_node("select_ad_account", self._select_ad_account_node)
-        workflow.add_node("list_media", self._list_media_node)
         workflow.add_node("select_media", self._select_media_node)
-        workflow.add_node("create_campaign", self._create_campaign_node)
-        workflow.add_node("preview_campaign", self._preview_campaign_node)
-        workflow.add_node("modify_campaign", self._modify_campaign_node)
+        workflow.add_node("preview_campaign", self._generate_campaign_preview_node)
+        workflow.add_node("refine_campaign", self._refine_campaign_node)
         workflow.add_node("publish_campaign", self._publish_campaign_node)
         
         workflow.add_node("route", self._route_node)
@@ -85,16 +85,13 @@ class AdCampaignWorkflow:
         workflow.add_edge("refine_images", END)
         workflow.add_edge("generate_audio", END)
         workflow.add_edge("select_avatar", END)
+        workflow.add_edge("select_avatar", END)
         workflow.add_edge("generate_video", END)
-        
-        # Facebook campaign edges
-        workflow.add_edge("authenticate_facebook", END)
+        workflow.add_edge("facebook_auth", END)
         workflow.add_edge("select_ad_account", END)
-        workflow.add_edge("list_media", END)
         workflow.add_edge("select_media", END)
-        workflow.add_edge("create_campaign", END)
         workflow.add_edge("preview_campaign", END)
-        workflow.add_edge("modify_campaign", END)
+        workflow.add_edge("refine_campaign", END)
         workflow.add_edge("publish_campaign", END)
         
         # Route node conditionally routes to next step or END
@@ -112,13 +109,11 @@ class AdCampaignWorkflow:
                 "generate_audio": "generate_audio",
                 "select_avatar": "select_avatar",
                 "generate_video": "generate_video",
-                "authenticate_facebook": "authenticate_facebook",
+                "facebook_auth": "facebook_auth",
                 "select_ad_account": "select_ad_account",
-                "list_media": "list_media",
                 "select_media": "select_media",
-                "create_campaign": "create_campaign",
                 "preview_campaign": "preview_campaign",
-                "modify_campaign": "modify_campaign",
+                "refine_campaign": "refine_campaign",
                 "publish_campaign": "publish_campaign",
                 END: END
             }
@@ -128,11 +123,81 @@ class AdCampaignWorkflow:
     
     async def _route_node(self, state: WorkflowState) -> Dict[str, Any]:
         """Entry point node that determines navigation"""
+        # Check for explicit Facebook campaign intent in user message
+        messages = state.get("messages", [])
+        if messages:
+            last_msg = messages[-1]
+            if last_msg.get("role") == "user" and last_msg.get("content"):
+                content = last_msg.get("content", "").lower()
+                if "facebook" in content and ("campaign" in content or "create" in content or "start" in content):
+                    print("Detected explicit Facebook campaign intent")
+                    intent = "facebook_auth"
+                    # Generate guidance immediately
+                    temp_state = state.copy()
+                    temp_state["current_step"] = intent
+                    agent_message = "Starting Facebook campaign creation. Please authenticate to continue."
+                    return {"navigation_intent": intent, "agent_message": agent_message}
+
+        # Check if we are waiting for confirmation to restart
+        if state.get("current_step") == "confirm_restart":
+            messages = state.get("messages", [])
+            if messages:
+                last_msg = messages[-1]
+                content = last_msg.get("content", "").lower()
+                if "yes" in content or "sure" in content or "ok" in content or "confirm" in content:
+                    # Restart confirmed
+                    new_url = state.get("pending_url")
+                    return {
+                        "navigation_intent": "scrape",
+                        "url": new_url,
+                        "pending_url": None,
+                        "previous_step": None,
+                        "product_data": None, # Clear data to force re-scrape
+                        "analysis": None,
+                        "scripts": None,
+                        "generated_images": None,
+                        "agent_message": "Starting fresh with the new URL."
+                    }
+                else:
+                    # Cancel restart
+                    prev = state.get("previous_step", "scrape")
+                    return {
+                        "navigation_intent": "stay",
+                        "current_step": prev, # Restore step
+                        "pending_url": None,
+                        "previous_step": None,
+                        "agent_message": "Okay, continuing with the current product."
+                    }
+
         # Analyze intent using agent
         result = await self.navigation_agent.analyze_intent(state)
         intent = result.get("intent")
         
         print(f"Navigation Intent: {intent} (Reason: {result.get('reasoning')})")
+
+        # Handle new URL submission mid-flow
+        if intent == "new_url_submission":
+            # Extract URL
+            messages = state.get("messages", [])
+            url = None
+            if messages:
+                content = messages[-1].get("content", "")
+                words = content.split()
+                for word in words:
+                    if "http" in word or "www" in word:
+                        url = word
+                        break
+            
+            if url:
+                return {
+                    "navigation_intent": "confirm_restart",
+                    "current_step": "confirm_restart",
+                    "pending_url": url,
+                    "previous_step": state.get("current_step"),
+                    "agent_message": f"I noticed you entered a new URL ({url}). Do you want to stop the current process and start fresh with this new product?"
+                }
+            else:
+                intent = "stay"
         
         # Map 'next' to the actual next step based on current_step
         if intent == "next":
@@ -156,13 +221,43 @@ class AdCampaignWorkflow:
             elif current == "select_avatar":
                 intent = "generate_video"
             elif current == "generate_video":
+                intent = "facebook_auth"
+            elif current == "facebook_auth":
+                intent = "select_ad_account"
+            elif current == "select_ad_account":
+                intent = "select_media"
+            elif current == "select_media":
+                intent = "preview_campaign"
+            elif current == "preview_campaign":
+                intent = "publish_campaign"
+            elif current == "publish_campaign":
                 intent = "complete"
         
         # Map 'stay' to current step
         elif intent == "stay":
             intent = state.get("current_step")
             
-        return {"navigation_intent": intent}
+        # Generate friendly guidance
+        # We temporarily update state with new intent to generate relevant guidance
+        temp_state = state.copy()
+        temp_state["current_step"] = intent
+        
+        # FIX: If intent is scrape, try to extract URL so GuideAgent knows about it
+        if intent == "scrape":
+            messages = state.get("messages", [])
+            if messages:
+                last_msg = messages[-1]
+                if last_msg.get("role") == "user":
+                    content = last_msg.get("content", "")
+                    words = content.split()
+                    for word in words:
+                        if "http" in word or "www" in word:
+                            temp_state["url"] = word
+                            break
+        
+        agent_message = await self.guide_agent.generate_guidance(temp_state)
+            
+        return {"navigation_intent": intent, "agent_message": agent_message}
 
     def _route_logic(self, state: WorkflowState) -> str:
         """Route to the appropriate step based on navigation_intent."""
@@ -173,12 +268,16 @@ class AdCampaignWorkflow:
         valid_steps = [
             "scrape", "analyze", "generate_scripts", "select_script", 
             "refine_script", "generate_images", "refine_images", 
+            "refine_script", "generate_images", "refine_images", 
             "generate_audio", "select_avatar", "generate_video",
-            "authenticate_facebook", "select_ad_account", "list_media",
-            "select_media", "create_campaign", "preview_campaign",
-            "modify_campaign", "publish_campaign"
+            "facebook_auth", "select_ad_account", "select_media",
+            "preview_campaign", "refine_campaign", "publish_campaign",
+            "confirm_restart"
         ]
         
+        if intent == "confirm_restart":
+            return END
+            
         if intent in valid_steps:
             return intent
         elif intent == "complete":
@@ -193,6 +292,24 @@ class AdCampaignWorkflow:
         state["current_step"] = "scrape"
         
         url = state.get("url")
+        
+        # If no URL in state, check if the last message contains a URL
+        if not url:
+            messages = state.get("messages", [])
+            if messages:
+                last_msg = messages[-1]
+                if last_msg.get("role") == "user":
+                    content = last_msg.get("content", "")
+                    # Simple check for URL
+                    if "http" in content or "www" in content:
+                        # Extract URL - simple split for now, can be more robust
+                        words = content.split()
+                        for word in words:
+                            if "http" in word or "www" in word:
+                                url = word
+                                state["url"] = url
+                                break
+        
         if not url:
             state["error"] = "No URL provided"
             return state
@@ -265,6 +382,11 @@ class AdCampaignWorkflow:
         # Update current_step in state
         state["current_step"] = "generate_scripts"
         
+        # Clear selection state if regenerating
+        state["selected_script"] = None
+        state["selected_script_index"] = None
+        state["script_refinement_feedback"] = []
+        
         product_data = state.get("selected_product") or state.get("product_data")
         analysis = state.get("analysis")
         
@@ -291,6 +413,13 @@ class AdCampaignWorkflow:
         if state.get("scripts"):
             product_data["current_scripts"] = state["scripts"]
         
+        # Debug: Print analysis data to verify it's being passed correctly
+        print(f"DEBUG: Analysis data passed to script agent: {json.dumps(analysis, indent=2) if analysis else 'None'}")
+        if analysis:
+            print(f"DEBUG: Target Audience: {analysis.get('target_audience')}")
+            print(f"DEBUG: USPs: {analysis.get('usps')}")
+            print(f"DEBUG: Marketing Angles: {analysis.get('marketing_angles')}")
+
         # Generate or refine scripts
         scripts = await self.script_agent.generate_scripts(product_data, analysis, feedback_history)
         state["scripts"] = scripts
@@ -303,7 +432,7 @@ class AdCampaignWorkflow:
         return state
     
     def _select_script_node(self, state: WorkflowState) -> WorkflowState:
-        """Select a script (handled by frontend, this node just validates)"""
+        """Select a script based on user input or state"""
         # Update current_step in state
         state["current_step"] = "select_script"
         
@@ -313,9 +442,29 @@ class AdCampaignWorkflow:
         if not scripts:
             state["error"] = "No scripts available. Please generate scripts first."
             return state
+            
+        # Try to parse selection from chat if index not set
+        if script_index is None:
+            messages = state.get("messages", [])
+            if messages:
+                last_msg = messages[-1]
+                if last_msg.get("role") == "user" and last_msg.get("content"):
+                    content = last_msg.get("content", "").lower()
+                    # Check for "option X" or "script X" or just "X"
+                    import re
+                    match = re.search(r'(?:option|script)?\s*(\d+)', content)
+                    if match:
+                        try:
+                            idx = int(match.group(1)) - 1  # Convert 1-based to 0-based
+                            if 0 <= idx < len(scripts):
+                                script_index = idx
+                                state["selected_script_index"] = idx
+                        except ValueError:
+                            pass
         
         if script_index is None or script_index < 0 or script_index >= len(scripts):
-            state["error"] = f"Invalid script index. Please select 0-{len(scripts)-1}"
+            # Don't error out immediately, just wait for valid selection
+            # state["error"] = f"Invalid script index. Please select 0-{len(scripts)-1}"
             return state
         
         state["selected_script"] = scripts[script_index]
@@ -517,317 +666,271 @@ class AdCampaignWorkflow:
         
         return state
     
-    # ===== Facebook Campaign Nodes =====
-    
-    async def _authenticate_facebook_node(self, state):
-        """Authenticate user with Facebook"""
-        from facebook.auth import authenticate_user
+    async def _facebook_auth_node(self, state: WorkflowState) -> WorkflowState:
+        """Authenticate with Facebook"""
+        state["current_step"] = "facebook_auth"
         
-        state["current_step"] = "authenticate_facebook"
-        
-        access_token = state.get("facebook_access_token")
-        if not access_token:
-            state["error"] = "No Facebook access token provided"
-            return state
-        
-        # Authenticate and get user info + ad accounts
-        auth_result = await authenticate_user(access_token)
-        
-        if not auth_result.get("success"):
-            state["error"] = auth_result.get("error", "Authentication failed")
-            return state
-        
-        state["facebook_user_id"] = auth_result["user_id"]
-        state["facebook_ad_accounts"] = auth_result["ad_accounts"]
+        # Check if we have a token in messages
+        messages = state.get("messages", [])
+        if messages:
+            last_msg = messages[-1]
+            if last_msg.get("role") == "user" and last_msg.get("content"):
+                token = last_msg.get("content")
+                # Basic validation - assume it's a token if it's long enough
+                if len(token) > 50:
+                    auth_result = await authenticate_user(token)
+                    
+                    if auth_result["success"]:
+                        state["facebook_access_token"] = token
+                        state["facebook_user_id"] = auth_result["user_id"]
+                        state["ad_accounts"] = auth_result["ad_accounts"]
+                        
+                        # Auto-select if only one account
+                        if len(auth_result["ad_accounts"]) == 1:
+                            state["selected_ad_account_id"] = auth_result["ad_accounts"][0]["id"]
+                    else:
+                        state["error"] = f"Authentication failed: {auth_result.get('error')}"
         
         return state
 
-    def _select_ad_account_node(self, state):
-        """Select Facebook ad account"""
+    def _select_ad_account_node(self, state: WorkflowState) -> WorkflowState:
+        """Select Facebook Ad Account"""
         state["current_step"] = "select_ad_account"
         
-        account_id = state.get("selected_ad_account_id")
-        ad_accounts = state.get("facebook_ad_accounts", [])
+        # Check for selection in messages
+        messages = state.get("messages", [])
+        if messages:
+            last_msg = messages[-1]
+            if last_msg.get("role") == "user" and last_msg.get("content"):
+                content = last_msg.get("content", "")
+                # Check for "Select account X" pattern or just an ID
+                import re
+                # Look for numeric ID (usually 15+ digits for FB)
+                match = re.search(r'(?:account\s+)?(\d{10,})', content)
+                if match:
+                    account_id = match.group(1)
+                    # Verify it's in the list
+                    ad_accounts = state.get("ad_accounts", [])
+                    for acc in ad_accounts:
+                        if acc.get("id") == account_id or acc.get("account_id") == account_id:
+                            state["selected_ad_account_id"] = acc.get("id")
+                            break
         
+        account_id = state.get("selected_ad_account_id")
         if not account_id:
             state["error"] = "No ad account selected"
-            return state
-        
-        # Find the selected account
-        selected_account = None
-        for account in ad_accounts:
-            if account.get("id") == f"act_{account_id}" or account.get("id") == account_id:
-                selected_account = account
-                break
-        
-        if not selected_account:
-            state["error"] = f"Ad account {account_id} not found"
-            return state
-        
-        state["selected_ad_account"] = selected_account
-        
+            
         return state
 
-    def _list_media_node(self, state):
-        """List available media (HeyGen-generated images and videos)"""
-        state["current_step"] = "list_media"
-        
-        # Get all available media
-        all_media = self.media_manager.list_all_media()
-        
-        # Combine images and videos into a single list
-        media_list = []
-        for image in all_media["images"]:
-            media_list.append(image)
-        for video in all_media["videos"]:
-            media_list.append(video)
-        
-        state["available_media"] = media_list
-        
-        return state
-
-    def _select_media_node(self, state):
-        """Select media for campaign"""
+    def _select_media_node(self, state: WorkflowState) -> WorkflowState:
+        """Select media for the ad"""
         state["current_step"] = "select_media"
         
-        selected_media = state.get("selected_media")
+        # Check for selection in messages
+        messages = state.get("messages", [])
+        if messages:
+            last_msg = messages[-1]
+            if last_msg.get("role") == "user" and last_msg.get("content"):
+                content = last_msg.get("content", "")
+                # Check for "Select media X"
+                if "select media" in content.lower():
+                    url = content.split("media")[-1].strip()
+                    if url:
+                        # Determine type
+                        media_type = "video" if url.endswith(".mp4") else "image"
+                        state["selected_media"] = {
+                            "type": media_type,
+                            "url": url,
+                            "filename": os.path.basename(url)
+                        }
+
+        # If no media selected, try to auto-select the generated video
+        if not state.get("selected_media"):
+            video_url = state.get("video_url")
+            if video_url:
+                # Find the video in media manager to get full metadata
+                # For now, construct basic metadata
+                state["selected_media"] = {
+                    "type": "video",
+                    "url": video_url,
+                    "filename": os.path.basename(video_url)
+                }
         
+        return state
+
+    async def _generate_campaign_preview_node(self, state: WorkflowState) -> WorkflowState:
+        """Generate campaign configuration and preview"""
+        state["current_step"] = "preview_campaign"
+        
+        selected_media = state.get("selected_media")
         if not selected_media:
             state["error"] = "No media selected"
             return state
-        
-        # Validate media exists
-        media_id = selected_media.get("id")
-        media = self.media_manager.get_media_by_id(media_id)
-        
-        if not media:
-            state["error"] = f"Media {media_id} not found"
-            return state
-        
-        state["selected_media"] = media
-        state["selected_media_type"] = media.get("type")
-        
-        return state
-
-    async def _create_campaign_node(self, state):
-        """Create campaign configuration using AI agent"""
-        state["current_step"] = "create_campaign"
-        
-        selected_media = state.get("selected_media")
-        
-        if not selected_media:
-            state["error"] = "No media selected. Please select media first."
-            return state
-        
-        # Build context from product analysis and script if available
-        context_parts = []
-        
-        if state.get("analysis"):
-            context_parts.append(f"Product Analysis: {state['analysis']}")
-        
-        if state.get("selected_script"):
-            context_parts.append(f"Ad Script: {state['selected_script']}")
-        
-        context = "\n\n".join(context_parts) if context_parts else None
-        
-        # Generate campaign configuration
-        campaign_config = await self.campaign_creation_agent.create_campaign(
-            selected_media,
-            context
-        )
-        
-        state["campaign_config"] = campaign_config
-        state["campaign_status"] = "draft"
-        
-        return state
-
-    async def _preview_campaign_node(self, state):
-        """Generate campaign preview"""
-        state["current_step"] = "preview_campaign"
-        
-        campaign_config = state.get("campaign_config")
-        selected_media = state.get("selected_media")
-        
-        if not campaign_config:
-            state["error"] = "No campaign configuration. Please create campaign first."
-            return state
-        
-        if not selected_media:
-            state["error"] = "No media selected."
-            return state
-        
-        # Generate preview
+            
+        # Generate config if not exists
+        if not state.get("campaign_config"):
+            # Gather context
+            context = f"""
+            Product: {state.get('selected_product', {}).get('title', 'Unknown Product')}
+            Analysis: {state.get('analysis', {}).get('summary', '')}
+            Script: {state.get('selected_script', '')}
+            """
+            
+            config = await self.campaign_creation_agent.create_campaign(selected_media, context)
+            state["campaign_config"] = config
+            
+        # Generate preview text
         preview = await self.campaign_preview_agent.generate_preview(
-            campaign_config,
+            state["campaign_config"],
             selected_media
         )
-        
-        state["campaign_preview"] = preview
-        state["campaign_status"] = "preview"
+        state["campaign_preview"] = preview["preview_text"]
         
         return state
 
-    async def _modify_campaign_node(self, state):
-        """Modify campaign based on user feedback"""
-        state["current_step"] = "modify_campaign"
+    async def _refine_campaign_node(self, state: WorkflowState) -> WorkflowState:
+        """Refine campaign configuration based on feedback"""
+        state["current_step"] = "refine_campaign"
         
-        campaign_config = state.get("campaign_config")
         messages = state.get("messages", [])
-        
-        if not campaign_config:
-            state["error"] = "No campaign configuration to modify."
-            return state
-        
-        # Get latest user message as modification request
-        if not messages:
-            state["error"] = "No modification request provided."
-            return state
-        
-        latest_message = messages[-1]
-        if latest_message.get("role") != "user":
-            state["error"] = "No user modification request found."
-            return state
-        
-        modification_request = latest_message.get("content")
-        
-        # Apply modifications
-        updated_config = await self.campaign_modification_agent.modify_campaign(
-            campaign_config,
-            modification_request
-        )
-        
-        state["campaign_config"] = updated_config
-        
-        # Track modification
-        if "campaign_modifications" not in state:
-            state["campaign_modifications"] = []
-        state["campaign_modifications"].append(modification_request)
-        
-        # Regenerate preview
-        preview = await self.campaign_preview_agent.generate_preview(
-            updated_config,
-            state.get("selected_media")
-        )
-        state["campaign_preview"] = preview
-        state["campaign_status"] = "modified"
+        if messages:
+            last_msg = messages[-1]
+            if last_msg.get("role") == "user" and last_msg.get("content"):
+                feedback = last_msg.get("content")
+                
+                current_config = state.get("campaign_config")
+                if current_config:
+                    new_config = await self.campaign_modification_agent.modify_campaign(
+                        current_config,
+                        feedback
+                    )
+                    state["campaign_config"] = new_config
+                    
+                    # Regenerate preview
+                    preview = await self.campaign_preview_agent.generate_preview(
+                        new_config,
+                        state.get("selected_media")
+                    )
+                    state["campaign_preview"] = preview["preview_text"]
         
         return state
 
-    async def _publish_campaign_node(self, state):
-        """Publish campaign to Facebook Ads"""
-        from facebook.campaigns import create_campaign
-        from facebook.adsets import create_adset
-        from facebook.ads import create_video_ad
-        from facebook.media import upload_media_service
-        from datetime import datetime, timedelta
-        
+    async def _publish_campaign_node(self, state: WorkflowState) -> WorkflowState:
+        """Publish campaign to Facebook"""
         state["current_step"] = "publish_campaign"
-        state["campaign_status"] = "publishing"
         
-        campaign_config = state.get("campaign_config")
-        selected_media = state.get("selected_media")
-        access_token = state.get("facebook_access_token")
-        account_id = state.get("selected_ad_account_id")
-        
-        if not all([campaign_config, selected_media, access_token, account_id]):
-            state["error"] = "Missing required data for publishing"
+        if state.get("publish_status") == "success":
             return state
-        
+            
         try:
-            # Step 1: Create Campaign
-            campaign_data = campaign_config.get("campaign", {})
-            campaign_result = await create_campaign(
-                account_id=account_id,
-                name=campaign_data.get("name", "AI Generated Campaign"),
-                objective=campaign_data.get("objective", "OUTCOME_TRAFFIC"),
-                access_token=access_token,
-                special_ad_categories=campaign_data.get("special_ad_categories", ["NONE"])
-            )
+            config = state.get("campaign_config")
+            access_token = state.get("facebook_access_token")
+            account_id = state.get("selected_ad_account_id")
+            media = state.get("selected_media")
             
-            campaign_id = campaign_result.get("id")
-            state["published_campaign_id"] = campaign_id
-            
-            # Step 2: Upload Media
-            media_type = "video" if selected_media.get("type") == "video" else "image"
-            media_result = upload_media_service(
-                account_id=account_id,
-                media_type=media_type,
-                access_token=access_token,
-                temp_path=selected_media.get("file_path")
-            )
-            
-            if "error" in media_result:
-                state["error"] = f"Media upload failed: {media_result['error']}"
+            if not all([config, access_token, account_id, media]):
+                state["error"] = "Missing required information for publishing"
                 return state
+                
+            # 1. Upload Media
+            media_type = media.get("type", "image")
+            # Construct local file path from URL
+            # URL is like /static/videos/filename.mp4 -> static/videos/filename.mp4
+            file_path = media.get("url", "").lstrip("/")
+            if not os.path.exists(file_path):
+                # Try adding static/ if missing
+                if os.path.exists(f"static/{file_path}"):
+                    file_path = f"static/{file_path}"
+                else:
+                    state["error"] = f"Media file not found: {file_path}"
+                    return state
             
-            media_hash = media_result.get("hash")
-            video_id = media_result.get("video_id") if media_type == "video" else None
-            
-            # Step 3: Create Ad Set
-            adset_data = campaign_config.get("adset", {})
-            
-            # Calculate start and end times
-            start_time = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S%z")
-            end_time = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S%z")
-            
-            adset_result = await create_adset(
-                account_id=account_id,
-                campaign_id=campaign_id,
-                name=adset_data.get("name", "AI Generated Ad Set"),
-                daily_budget=adset_data.get("daily_budget", 2000),
-                start_time=start_time,
-                end_time=end_time,
-                access_token=access_token,
-                targeting=adset_data.get("targeting")
-            )
-            
-            adset_id = adset_result.get("id")
-            state["published_adset_id"] = adset_id
-            
-            # Step 4: Create Ad
-            ad_data = campaign_config.get("ad", {})
-            
-            # Get page_id from selected ad account (use first page or default)
-            page_id = state.get("selected_ad_account", {}).get("page_id", "YOUR_PAGE_ID")
+            media_hash = None
+            video_id = None
             
             if media_type == "video":
-                ad_result = await create_video_ad(
-                    account_id=account_id,
-                    adset_id=adset_id,
-                    page_id=page_id,
-                    ad_name=ad_data.get("name", "AI Generated Ad"),
-                    video_id=video_id,
-                    thumbnail_hash=media_hash,
-                    message=ad_data.get("primary_text", ""),
-                    link=ad_data.get("link", "https://example.com"),
-                    access_token=access_token
+                upload_res = await self.media_manager.upload_video_to_facebook(
+                    file_path, access_token, account_id
+                )
+                if "error" in upload_res:
+                    raise Exception(f"Video upload failed: {upload_res['error']}")
+                video_id = upload_res["video_id"]
+            else:
+                upload_res = await self.media_manager.upload_image_to_facebook(
+                    file_path, access_token, account_id
+                )
+                if "error" in upload_res:
+                    raise Exception(f"Image upload failed: {upload_res['error']}")
+                media_hash = upload_res["hash"]
+
+            # 2. Create Campaign
+            campaign_res = await create_campaign(
+                account_id,
+                config["campaign"]["name"],
+                config["campaign"]["objective"],
+                access_token,
+                config["campaign"].get("special_ad_categories")
+            )
+            campaign_id = campaign_res["id"]
+            
+            # 3. Create Ad Set
+            adset_res = await create_adset(
+                account_id,
+                campaign_id,
+                config["adset"]["name"],
+                config["adset"]["daily_budget"],
+                "2025-12-01T12:00:00-0700", # TODO: Dynamic start time
+                "2025-12-30T12:00:00-0700", # TODO: Dynamic end time
+                access_token,
+                config["adset"]["targeting"]
+            )
+            adset_id = adset_res["id"]
+            
+            # 4. Create Ad
+            if media_type == "video":
+                # Need page_id for video ads usually, or it uses the one associated with ad account
+                # For now, we'll try to fetch page_id or assume one exists
+                # In a real app, we'd select a Page first.
+                # Let's try to get the first page the user has access to
+                # For now, we'll assume the user has a page and we can find it or the API might error
+                # We'll use a placeholder page_id if we can't find one, which will fail
+                # Ideally we add a "Select Page" step.
+                # For this demo, we'll skip page selection and try to use a dummy page_id or the user's ID
+                # This might fail if not a Page ID.
+                page_id = state.get("facebook_user_id") # Fallback
+                
+                await create_video_ad(
+                    account_id,
+                    adset_id,
+                    page_id, 
+                    config["ad"]["name"],
+                    video_id,
+                    None, # thumbnail_hash
+                    config["ad"]["primary_text"],
+                    config["ad"]["link"],
+                    access_token
                 )
             else:
-                # For image ads, we'd use a different function (not implemented yet)
-                # For now, use video ad function with image hash
-                ad_result = await create_video_ad(
-                    account_id=account_id,
-                    adset_id=adset_id,
-                    page_id=page_id,
-                    ad_name=ad_data.get("name", "AI Generated Ad"),
-                    video_id=None,
-                    thumbnail_hash=media_hash,
-                    message=ad_data.get("primary_text", ""),
-                    link=ad_data.get("link", "https://example.com"),
-                    access_token=access_token
+                page_id = state.get("facebook_user_id") # Fallback
+                
+                await create_image_ad(
+                    account_id,
+                    adset_id,
+                    page_id,
+                    config["ad"]["name"],
+                    media_hash,
+                    config["ad"]["primary_text"],
+                    config["ad"]["link"],
+                    access_token
                 )
             
-            ad_id = ad_result.get("id")
-            state["published_ad_id"] = ad_id
-            
-            # Generate campaign URL
-            state["campaign_url"] = f"https://business.facebook.com/adsmanager/manage/campaigns?act={account_id}&selected_campaign_ids={campaign_id}"
-            state["campaign_status"] = "published"
+            state["publish_status"] = "success"
+            state["final_campaign_id"] = campaign_id
             
         except Exception as e:
             state["error"] = f"Publishing failed: {str(e)}"
-            state["campaign_status"] = "draft"
-        
+            state["publish_status"] = "failed"
+            
         return state
 
     async def run_step(self, state: WorkflowState, config: Dict = None) -> WorkflowState:
@@ -870,6 +973,14 @@ class AdCampaignWorkflow:
             "video_url": None,
             "video_status": None,
             "error": None,
-            "iteration_count": {}
+            "iteration_count": {},
+            "facebook_access_token": None,
+            "facebook_user_id": None,
+            "ad_accounts": None,
+            "selected_ad_account_id": None,
+            "selected_media": None,
+            "campaign_config": None,
+            "campaign_preview": None,
+            "publish_status": None
         }
 

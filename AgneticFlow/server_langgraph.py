@@ -95,26 +95,6 @@ class SelectProductRequest(WorkflowRequest):
     product_index: Optional[int] = None
     product_data: Optional[Dict[str, Any]] = None
 
-# Facebook-specific request models
-class FacebookAuthRequest(WorkflowRequest):
-    access_token: str
-
-class SelectAdAccountRequest(WorkflowRequest):
-    account_id: str
-
-class SelectMediaRequest(WorkflowRequest):
-    media_id: str
-    media_data: Dict[str, Any]
-
-class CreateCampaignRequest(WorkflowRequest):
-    pass
-
-class ModifyCampaignRequest(WorkflowRequest):
-    modification_request: str
-
-class PublishCampaignRequest(WorkflowRequest):
-    pass
-
 # --- Helper Functions ---
 
 def get_or_create_thread(thread_id: Optional[str] = None) -> str:
@@ -149,24 +129,7 @@ def get_or_create_thread(thread_id: Optional[str] = None) -> str:
             "video_url": None,
             "video_status": None,
             "error": None,
-            "iteration_count": {},
-            # Facebook fields
-            "facebook_access_token": None,
-            "facebook_user_id": None,
-            "facebook_ad_accounts": None,
-            "selected_ad_account_id": None,
-            "selected_ad_account": None,
-            "available_media": None,
-            "selected_media": None,
-            "selected_media_type": None,
-            "campaign_config": None,
-            "campaign_preview": None,
-            "campaign_modifications": [],
-            "published_campaign_id": None,
-            "published_adset_id": None,
-            "published_ad_id": None,
-            "campaign_status": None,
-            "campaign_url": None
+            "iteration_count": {}
         }
     
     return thread_id
@@ -588,212 +551,70 @@ async def chat(request: WorkflowRequest):
         "error": result.get("error")
     }
 
-# ===== Facebook Campaign Endpoints =====
+@app.get("/api/workflow/stream")
+async def stream_workflow(thread_id: str, message: Optional[str] = None):
+    """Stream workflow events using SSE"""
+    from fastapi.responses import StreamingResponse
+    import json
+    import asyncio
 
-@app.post("/api/facebook/authenticate")
-async def facebook_authenticate(request: FacebookAuthRequest):
-    """Authenticate with Facebook and get ad accounts"""
-    thread_id = get_or_create_thread(request.thread_id)
-    state = active_sessions[thread_id]
-    
-    # Set access token
-    state["facebook_access_token"] = request.access_token
-    state["current_step"] = "authenticate_facebook"
-    state = update_state_from_request(state, request)
-    
-    # Run workflow step
-    config = {"configurable": {"thread_id": thread_id}}
-    result = await workflow.run_step(state, config)
-    
-    # Update session
-    active_sessions[thread_id] = result
-    
-    return {
-        "thread_id": thread_id,
-        "state": result,
-        "user_id": result.get("facebook_user_id"),
-        "ad_accounts": result.get("facebook_ad_accounts"),
-        "error": result.get("error")
-    }
+    async def event_generator():
+        thread_id_val = get_or_create_thread(thread_id)
+        state = active_sessions[thread_id_val]
+        
+        # If message provided, add to state
+        if message:
+            state["messages"].append({
+                "role": "user",
+                "content": message
+            })
+            
+            # Simple intent check if not already set (similar to chat endpoint)
+            # This is a basic fallback; ideally we use the graph's routing
+            pass
 
-@app.post("/api/facebook/select_account")
-async def select_facebook_account(request: SelectAdAccountRequest):
-    """Select Facebook ad account"""
-    thread_id = get_or_create_thread(request.thread_id)
-    state = active_sessions[thread_id]
-    
-    # Set selected account
-    state["selected_ad_account_id"] = request.account_id
-    state["current_step"] = "select_ad_account"
-    state = update_state_from_request(state, request)
-    
-    # Run workflow step
-    config = {"configurable": {"thread_id": thread_id}}
-    result = await workflow.run_step(state, config)
-    
-    # Update session
-    active_sessions[thread_id] = result
-    
-    return {
-        "thread_id": thread_id,
-        "state": result,
-        "selected_account": result.get("selected_ad_account"),
-        "error": result.get("error")
-    }
+        config = {"configurable": {"thread_id": thread_id_val}}
+        
+        try:
+            # Stream events from the graph
+            async for event in workflow.app.astream_events(state, config, version="v1"):
+                kind = event["event"]
+                
+                # Stream LLM tokens for "typewriter" effect
+                if kind == "on_chat_model_stream":
+                    content = event["data"]["chunk"].content
+                    if content:
+                        yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
+                
+                # Stream tool/node updates
+                elif kind == "on_chain_end":
+                    # Check if it's a node finishing
+                    if event["name"] in ["scrape", "analyze", "generate_scripts", "generate_images", "generate_audio", "generate_video", "facebook_auth"]:
+                        # We can send intermediate state updates if needed
+                        pass
+                        
+                # Handle errors
+                if "error" in event:
+                     yield f"data: {json.dumps({'type': 'error', 'content': str(event['error'])})}\n\n"
 
-@app.get("/api/facebook/media")
-async def list_facebook_media(thread_id: Optional[str] = None):
-    """List available media (HeyGen-generated images and videos)"""
-    thread_id = get_or_create_thread(thread_id)
-    state = active_sessions[thread_id]
-    
-    # Set current step
-    state["current_step"] = "list_media"
-    
-    # Run workflow step
-    config = {"configurable": {"thread_id": thread_id}}
-    result = await workflow.run_step(state, config)
-    
-    # Update session
-    active_sessions[thread_id] = result
-    
-    return {
-        "thread_id": thread_id,
-        "available_media": result.get("available_media", []),
-        "error": result.get("error")
-    }
+            # Final state update
+            # We need to get the final state after streaming
+            # Since astream_events doesn't return the final state directly in the loop easily for the whole graph,
+            # we might need to fetch it or rely on the last "on_chain_end" of the graph.
+            # For simplicity, we'll fetch the state again or rely on the fact that the graph updates the checkpointer.
+            
+            # Actually, let's just yield a "complete" event with the final state
+            # We can get the state from the memory saver
+            final_state = workflow.app.get_state(config).values
+            active_sessions[thread_id_val] = final_state # Update local cache
+            
+            yield f"data: {json.dumps({'type': 'complete', 'state': final_state})}\n\n"
+            
+        except Exception as e:
+            print(f"Streaming error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
 
-@app.post("/api/facebook/select_media")
-async def select_facebook_media(request: SelectMediaRequest):
-    """Select media for campaign"""
-    thread_id = get_or_create_thread(request.thread_id)
-    state = active_sessions[thread_id]
-    
-    # Set selected media
-    state["selected_media"] = request.media_data
-    state["current_step"] = "select_media"
-    state = update_state_from_request(state, request)
-    
-    # Run workflow step
-    config = {"configurable": {"thread_id": thread_id}}
-    result = await workflow.run_step(state, config)
-    
-    # Update session
-    active_sessions[thread_id] = result
-    
-    return {
-        "thread_id": thread_id,
-        "state": result,
-        "selected_media": result.get("selected_media"),
-        "error": result.get("error")
-    }
-
-@app.post("/api/facebook/campaign/create")
-async def create_facebook_campaign(request: CreateCampaignRequest):
-    """Create campaign configuration using AI"""
-    thread_id = get_or_create_thread(request.thread_id)
-    state = active_sessions[thread_id]
-    
-    # Set current step
-    state["current_step"] = "create_campaign"
-    state = update_state_from_request(state, request)
-    
-    # Run workflow step
-    config = {"configurable": {"thread_id": thread_id}}
-    result = await workflow.run_step(state, config)
-    
-    # Update session
-    active_sessions[thread_id] = result
-    
-    return {
-        "thread_id": thread_id,
-        "state": result,
-        "campaign_config": result.get("campaign_config"),
-        "campaign_status": result.get("campaign_status"),
-        "error": result.get("error")
-    }
-
-@app.post("/api/facebook/campaign/preview")
-async def preview_facebook_campaign(request: WorkflowRequest):
-    """Generate campaign preview"""
-    thread_id = get_or_create_thread(request.thread_id)
-    state = active_sessions[thread_id]
-    
-    # Set current step
-    state["current_step"] = "preview_campaign"
-    state = update_state_from_request(state, request)
-    
-    # Run workflow step
-    config = {"configurable": {"thread_id": thread_id}}
-    result = await workflow.run_step(state, config)
-    
-    # Update session
-    active_sessions[thread_id] = result
-    
-    return {
-        "thread_id": thread_id,
-        "state": result,
-        "campaign_preview": result.get("campaign_preview"),
-        "campaign_config": result.get("campaign_config"),
-        "error": result.get("error")
-    }
-
-@app.post("/api/facebook/campaign/modify")
-async def modify_facebook_campaign(request: ModifyCampaignRequest):
-    """Modify campaign based on user feedback"""
-    thread_id = get_or_create_thread(request.thread_id)
-    state = active_sessions[thread_id]
-    
-    # Add modification request as message
-    state["messages"].append({
-        "role": "user",
-        "content": request.modification_request
-    })
-    state["current_step"] = "modify_campaign"
-    state = update_state_from_request(state, request)
-    
-    # Run workflow step
-    config = {"configurable": {"thread_id": thread_id}}
-    result = await workflow.run_step(state, config)
-    
-    # Update session
-    active_sessions[thread_id] = result
-    
-    return {
-        "thread_id": thread_id,
-        "state": result,
-        "campaign_config": result.get("campaign_config"),
-        "campaign_preview": result.get("campaign_preview"),
-        "error": result.get("error")
-    }
-
-@app.post("/api/facebook/campaign/publish")
-async def publish_facebook_campaign(request: PublishCampaignRequest):
-    """Publish campaign to Facebook Ads"""
-    thread_id = get_or_create_thread(request.thread_id)
-    state = active_sessions[thread_id]
-    
-    # Set current step
-    state["current_step"] = "publish_campaign"
-    state = update_state_from_request(state, request)
-    
-    # Run workflow step
-    config = {"configurable": {"thread_id": thread_id}}
-    result = await workflow.run_step(state, config)
-    
-    # Update session
-    active_sessions[thread_id] = result
-    
-    return {
-        "thread_id": thread_id,
-        "state": result,
-        "campaign_id": result.get("published_campaign_id"),
-        "adset_id": result.get("published_adset_id"),
-        "ad_id": result.get("published_ad_id"),
-        "campaign_url": result.get("campaign_url"),
-        "campaign_status": result.get("campaign_status"),
-        "error": result.get("error")
-    }
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 # Mount static files
 from fastapi.staticfiles import StaticFiles

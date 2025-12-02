@@ -9,6 +9,7 @@ const API_BASE_URL = 'http://localhost:8000/api/workflow';
 export interface WorkflowState {
     current_step: string;
     navigation_intent?: string;
+    agent_message?: string;
     messages: Array<{ role: string; content: string }>;
     url?: string;
     product_data?: any;
@@ -32,6 +33,14 @@ export interface WorkflowState {
     video_status?: string;
     error?: string;
     iteration_count: Record<string, number>;
+    facebook_access_token?: string;
+    facebook_user_id?: string;
+    ad_accounts?: Array<any>;
+    selected_ad_account_id?: string;
+    selected_media?: { type: string; url: string; filename?: string };
+    campaign_config?: any;
+    campaign_preview?: string;
+    publish_status?: string;
 }
 
 export interface WorkflowResponse {
@@ -161,11 +170,17 @@ class WorkflowAPI {
     }
 
     async chat(message: string): Promise<WorkflowResponse> {
-        if (!this.threadId) throw new Error('No thread_id available');
+        // Allow chat without thread_id to start new session
         const response = await axios.post(`${API_BASE_URL}/chat`, {
             thread_id: this.threadId,
             message
         });
+
+        // Update thread_id if returned
+        if (response.data.thread_id) {
+            this.threadId = response.data.thread_id;
+        }
+
         return response.data;
     }
 

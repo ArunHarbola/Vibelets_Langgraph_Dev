@@ -184,3 +184,94 @@ class MediaManager:
         """
         images = self.list_images()
         return images[:count]
+
+    async def upload_image_to_facebook(self, file_path: str, access_token: str, account_id: str) -> Dict[str, Any]:
+        """
+        Upload an image to Facebook Ad Account
+        
+        Args:
+            file_path: Path to local image file
+            access_token: Facebook access token
+            account_id: Ad account ID
+            
+        Returns:
+            Dict with 'hash' of the uploaded image
+        """
+        import httpx
+        
+        url = f"https://graph.facebook.com/v22.0/act_{account_id}/adimages"
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                # Read file content
+                with open(file_path, "rb") as f:
+                    file_content = f.read()
+                    
+                filename = os.path.basename(file_path)
+                files = {"filename": (filename, file_content, "image/jpeg")} # Assume jpeg/png
+                
+                response = await client.post(
+                    url,
+                    params={"access_token": access_token},
+                    files=files,
+                    timeout=60
+                )
+                
+                data = response.json()
+                
+                if "error" in data:
+                    return {"error": data["error"].get("message")}
+                
+                # Success - returns list of images with hash
+                if "images" in data and filename in data["images"]:
+                    return {"hash": data["images"][filename]["hash"]}
+                
+                return {"error": "Upload successful but hash not found"}
+                
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def upload_video_to_facebook(self, file_path: str, access_token: str, account_id: str) -> Dict[str, Any]:
+        """
+        Upload a video to Facebook Ad Account
+        
+        Args:
+            file_path: Path to local video file
+            access_token: Facebook access token
+            account_id: Ad account ID
+            
+        Returns:
+            Dict with 'video_id'
+        """
+        import httpx
+        
+        url = f"https://graph.facebook.com/v22.0/act_{account_id}/advideos"
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                # Read file content
+                with open(file_path, "rb") as f:
+                    file_content = f.read()
+                    
+                filename = os.path.basename(file_path)
+                files = {"source": (filename, file_content, "video/mp4")} 
+                
+                response = await client.post(
+                    url,
+                    params={"access_token": access_token},
+                    files=files,
+                    timeout=120 # Videos take longer
+                )
+                
+                data = response.json()
+                
+                if "error" in data:
+                    return {"error": data["error"].get("message")}
+                
+                if "id" in data:
+                    return {"video_id": data["id"]}
+                
+                return {"error": "Upload successful but video ID not found"}
+                
+        except Exception as e:
+            return {"error": str(e)}

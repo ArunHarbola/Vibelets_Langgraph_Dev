@@ -38,15 +38,15 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ analysis, onConfirm,
             </div>
 
             <div className="mt-6 flex flex-col gap-3">
-                <button
+                {/* <button
                     onClick={onConfirm}
                     className="w-full py-3 bg-green-600 hover:bg-green-500 text-white rounded-lg font-medium flex items-center justify-center gap-2 transition-all hover:shadow-[0_0_20px_rgba(34,197,94,0.3)]"
                 >
                     <Check size={18} />
                     Confirm Analysis
-                </button>
+                </button> */}
                 <p className="text-xs text-center text-zinc-500">
-                    Or type below to refine the analysis...
+                    Type below to refine the analysis...
                 </p>
             </div>
         </motion.div>

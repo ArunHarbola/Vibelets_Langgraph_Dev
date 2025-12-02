@@ -102,25 +102,34 @@ class ScriptGenerationAgent:
         )
     
     def _parse_scripts(self, text: str) -> List[str]:
-        """Parse scripts from LLM output"""
-        pattern = r'SCRIPT\s*(?:\[?\d+\]?)?:?(.*?)(?=SCRIPT\s*(?:\[?\d+\]?)?:?|$)'
+        """Parse scripts from LLM output using robust regex"""
+        scripts = []
+        
+        # Pattern to match "### SCRIPT [N] ###" or similar headers and capture content until next header or end
+        # This handles variations like "### SCRIPT 1 ###", "### SCRIPT [1]", "Script 1:", etc.
+        pattern = r'(?:###\s*SCRIPT\s*(?:\[?\d+\]?)?\s*###|SCRIPT\s*(?:\[?\d+\]?)?:?)(.*?)(?=(?:###\s*SCRIPT|SCRIPT\s*(?:\[?\d+\]?)?:?)|$)'
+        
         matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
         
-        scripts = []
         for match in matches:
             cleaned = match.strip()
+            # Remove potential leading numbering like "1." or "[1]" if not caught by main pattern
+            cleaned = re.sub(r'^\s*(?:\[?\d+\]?\.?|:)\s*', '', cleaned)
+            # Remove trailing delimiters
             cleaned = re.sub(r'-+$', '', cleaned).strip()
-            if cleaned:
+            
+            if cleaned and len(cleaned) > 20:  # Minimal length check
                 scripts.append(cleaned)
         
+        # Fallback: if no scripts found, try splitting by double newlines if it looks like a list
         if not scripts:
-            if '---' in text:
-                parts = text.split('---')
-                scripts = [p.strip() for p in parts if p.strip()]
-            else:
-                scripts = [text.strip()]
-        
-        return scripts
+            print("Regex parsing failed, falling back to simple split")
+            parts = text.split("\n\n")
+            for part in parts:
+                if len(part.strip()) > 50:
+                    scripts.append(part.strip())
+
+        return scripts[:3]  # Ensure max 3 scripts
     
     async def generate_scripts(self, product_data: Dict, analysis: Dict, feedback_history: List[str] = None) -> List[str]:
         """Generate or refine ad scripts"""
@@ -129,30 +138,39 @@ class ScriptGenerationAgent:
         if not feedback_history:
             # Initial generation
             prompt = ChatPromptTemplate.from_messages([
-                ("system", "You are a creative copywriter specializing in short-form video ad scripts for social media."),
+                ("system", "You are a creative copywriter specializing in short-form video ad scripts for social media (TikTok, Reels, Shorts)."),
                 ("human", """
-Create 3 unique short-form video ad scripts (30-45 seconds each) for this product:
+Create exactly 3 unique short-form video ad scripts (30-60 seconds each) for this product:
 
 Product: {title}
 Target Audience: {target_audience}
 USPs: {usps}
 Marketing Angles: {marketing_angles}
 
+CRITICAL INSTRUCTIONS:
+- You MUST tailor the scripts specifically to the defined Target Audience.
+- You MUST highlight the provided USPs.
+- You MUST utilize the suggested Marketing Angles.
+- Do not generate generic scripts; use the specific product analysis provided above.
+
 Each script should:
-- Hook viewers in the first 3 seconds
-- Address a pain point or desire
-- Highlight key benefits
-- Include a clear call-to-action
-- Be conversational and engaging
-- Use AIDA framework (Attention, Interest, Desire, Action)
+- Be distinct in style (e.g., UGC style, Problem/Solution, ASMR/Aesthetic, Fast-paced/Hype)
+- Include visual cues in parentheses (e.g., [Close up of texture], [Text overlay: ...])
+- Have a strong hook in the first 3 seconds
+- End with a clear Call to Action (CTA)
 
-Format each script with:
-SCRIPT [1/2/3]:
-[Script content - spoken word only, 30-45 seconds when read aloud, around 100 words max.]
----
+IMPORTANT: Format each script CLEARLY using the following delimiters:
 
-Make each script distinctly different in approach (problem-solution, testimonial-style, lifestyle-focused).
-Output only the voice over without additional commentary.
+### SCRIPT [1] ###
+[Script content here...]
+
+### SCRIPT [2] ###
+[Script content here...]
+
+### SCRIPT [3] ###
+[Script content here...]
+
+Do not include any intro or outro text. Just the 3 scripts.
 """)
             ])
             
@@ -168,7 +186,7 @@ Output only the voice over without additional commentary.
             latest_feedback = feedback_history[-1]
             scripts_text = ""
             for i, script in enumerate(product_data.get('current_scripts', []), 1):
-                scripts_text += f"\nSCRIPT {i}:\n{script}\n---\n"
+                scripts_text += f"\n### SCRIPT [{i}] ###\n{script}\n"
             
             prompt = ChatPromptTemplate.from_messages([
                 ("system", "You are a creative copywriter. Refine the ad scripts based on user feedback while maintaining quality and effectiveness."),
@@ -182,12 +200,17 @@ USPs: {usps}
 
 User Feedback: {feedback}
 
-Refine the 3 scripts addressing the user's feedback. Maintain the format:
-SCRIPT [1/2/3]:
-[Script content]
----
+Refine the 3 scripts addressing the user's feedback. 
+IMPORTANT: Return exactly 3 scripts using the SAME format:
 
-Keep scripts 30-45 seconds when read aloud (around 100 words max each).
+### SCRIPT [1] ###
+[Refined content for script 1]
+
+### SCRIPT [2] ###
+[Refined content for script 2]
+
+### SCRIPT [3] ###
+[Refined content for script 3]
 """)
             ])
             
@@ -360,6 +383,11 @@ Workflow Steps:
 10. generate_video (Final video)
 
 Rules:
+- If user provides a URL (starts with http/https/www):
+    - If current step is 'scrape' or 'start' -> return "scrape"
+    - If current step is NOT 'scrape' -> return "new_url_submission" (to ask for confirmation)
+- If current step is 'generate_scripts' and user selects a script (e.g., "choose 2", "option 1", "I like the first one") -> return "select_script"
+- If current step is 'select_script' and user provides feedback (e.g., "make it funnier", "change the hook") -> return "refine_script"
 - If user says "next", "looks good", "continue", or approves current output -> return "next"
 - If user wants to change something from a previous step (e.g., "change target audience") -> return the name of that step (e.g., "analyze")
 - If user explicitly asks to go to a step -> return that step name
@@ -368,7 +396,7 @@ Rules:
 
 Output JSON:
 {{
-    "intent": "next" | "stay" | "complete" | "step_name",
+    "intent": "next" | "stay" | "complete" | "step_name" | "new_url_submission",
     "reasoning": "brief explanation"
 }}
 """),
@@ -393,5 +421,72 @@ Determine the navigation intent.
         except:
             print(f"Failed to parse navigation intent: {result}")
             return {"intent": "stay"}
+
+
+class GuideAgent:
+    """Agent for providing friendly guidance and next steps"""
+    
+    def __init__(self):
+        self.llm = ChatOpenAI(
+            model="gpt-4",
+            temperature=0.7,
+            openai_api_key=Config.OPENAI_API_KEY
+        )
+    
+    async def generate_guidance(self, state: Dict) -> str:
+        """Generate friendly guidance based on current state"""
+        current_step = state.get("current_step", "scrape")
+        error = state.get("error")
+        
+        # Context building
+        context = {
+            "error": error,
+            "has_url": bool(state.get("url")),
+            "has_analysis": bool(state.get("analysis")),
+            "has_scripts": bool(state.get("scripts")),
+            "selected_script": bool(state.get("selected_script")),
+            "has_images": bool(state.get("generated_images")),
+            "has_audio": bool(state.get("audio_file")),
+            "has_video": bool(state.get("video_url"))
+        }
+        
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a friendly, helpful AI guide for an ad campaign generation tool.
+Your goal is to explain what just happened and guide the user on what to do next.
+Be conversational, encouraging, and concise.
+Use a natural, human-like tone.
+
+Workflow Steps:
+1. scrape: User inputs a product URL.
+2. analyze: AI analyzes the product. User can refine.
+3. generate_scripts: AI creates scripts. User can refine.
+4. select_script: User picks one script.
+5. refine_script: User edits the chosen script.
+6. generate_images: AI creates images. User can refine.
+7. refine_images: User edits image prompts.
+8. generate_audio: AI generates voiceover.
+9. select_avatar: User picks an avatar.
+10. generate_video: AI creates the final video.
+
+Current Step: {current_step}
+Context: {context}
+
+Instructions:
+- If there is an error, explain it simply and ask them to try again.
+- If a step just finished successfully, summarize it briefly (e.g., "I've analyzed your product!") and suggest the next logical step.
+- If step is 'select_script' and a script is selected, say "Great choice! Do you want to refine this script or proceed to generating images?"
+- If waiting for input, tell them exactly what to provide (e.g., "Please paste the product URL to get started.").
+- Keep it short (max 2 sentences).
+"""),
+            ("human", "What should I tell the user now?")
+        ])
+        
+        chain = prompt | self.llm | StrOutputParser()
+        result = await chain.ainvoke({
+            "current_step": current_step,
+            "context": str(context)
+        })
+        
+        return result.strip()
 
 
